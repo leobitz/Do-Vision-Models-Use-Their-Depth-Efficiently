@@ -319,14 +319,13 @@ class ViTOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.layer_idx = layer_idx
 
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor, ablation_kwargs=None) -> torch.Tensor:
         _hidden_states = self.dense(hidden_states)
         hidden_states = self.dropout(_hidden_states)
-        # if self.layer_idx == 8: # skip the residual connection at layer 9
-        #     hidden_states = hidden_states 
-        # else: 
-        #     hidden_states = hidden_states + input_tensor
-        hidden_states = hidden_states + input_tensor
+        if ablation_kwargs is not None and 'ffn' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
+            hidden_states = input_tensor 
+        else: 
+            hidden_states = hidden_states + input_tensor
         return hidden_states, _hidden_states
     
 
@@ -345,7 +344,9 @@ class ViTLayer(GradientCheckpointingLayer):
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layer_idx = layer_idx
 
-    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None, ablation_kwargs=None) -> torch.Tensor:
+        if ablation_kwargs is not None and 'full' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
+            return hidden_states, {} 
         bag = {
             "hidden_states": hidden_states,
         }
@@ -353,11 +354,10 @@ class ViTLayer(GradientCheckpointingLayer):
         attention_output = self.attention(hidden_states_norm, head_mask)
         bag["attention_output"] = attention_output
         bag['hidden_states_norm'] = hidden_states_norm
-        # if self.layer_idx == 9: # skip the attention layer output
-        #     hidden_states = attention_output 
-        # else: 
-        #     hidden_states = attention_output + hidden_states
-        hidden_states = attention_output + hidden_states
+        if ablation_kwargs is not None and 'attention' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
+            hidden_states = hidden_states 
+        else: 
+            hidden_states = attention_output + hidden_states
 
         # in ViT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
@@ -365,7 +365,7 @@ class ViTLayer(GradientCheckpointingLayer):
         layer_output = self.intermediate(layer_output)
 
         # second residual connection is done here
-        layer_output, _hidden_states = self.output(layer_output, hidden_states)
+        layer_output, _hidden_states = self.output(layer_output, hidden_states, ablation_kwargs=ablation_kwargs)
         bag['ffn_hidden_state'] = _hidden_states
         bag['layer_output'] = layer_output
         return layer_output, bag
@@ -406,11 +406,11 @@ class ViTEncoder(nn.Module):
         self.layer = nn.ModuleList([ViTLayer(config, layer_idx=i) for i in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> BaseModelOutput:
+    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None, **kwargs) -> BaseModelOutput:
         bags = []
         for i, layer_module in enumerate(self.layer):
             layer_head_mask = head_mask[i] if head_mask is not None else None
-            hidden_states, bag = layer_module(hidden_states, layer_head_mask)
+            hidden_states, bag = layer_module(hidden_states, layer_head_mask, **kwargs)
             bags.append(bag)
 
 
@@ -558,8 +558,8 @@ class ViTModel(ViTPreTrainedModel):
         embedding_output = self.embeddings(
             pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
         )
-
-        encoder_outputs: BaseModelOutput = self.encoder(embedding_output, head_mask=head_mask)
+        ablation_kwargs = kwargs.pop("ablation_kwargs", None)
+        encoder_outputs: BaseModelOutput = self.encoder(embedding_output, head_mask=head_mask, ablation_kwargs=ablation_kwargs)
 
         sequence_output = encoder_outputs.last_hidden_state
         sequence_output = self.layernorm(sequence_output)

@@ -17,7 +17,7 @@
 import collections.abc
 import math
 from typing import Callable, Optional, Union
-from dataclasses import dataclass
+
 import torch
 from torch import nn
 
@@ -35,6 +35,7 @@ from transformers.pytorch_utils import find_pruneable_heads_and_indices, prune_l
 from transformers.utils import TransformersKwargs, auto_docstring, logging, torch_int
 from transformers.utils.generic import can_return_tuple, check_model_inputs
 from transformers.models.vit.configuration_vit import ViTConfig
+
 
 
 logger = logging.get_logger(__name__)
@@ -313,108 +314,61 @@ class ViTIntermediate(nn.Module):
 
 
 class ViTOutput(nn.Module):
-    def __init__(self, config: ViTConfig, layer_idx: Optional[int] = None):
+    def __init__(self, config: ViTConfig):
         super().__init__()
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.layer_idx = layer_idx
 
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor, ablation_kwargs=None) -> torch.Tensor:
-        _hidden_states = self.dense(hidden_states)
-        hidden_states = self.dropout(_hidden_states)
-        if ablation_kwargs is not None and 'ffn' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
-            hidden_states = input_tensor 
-        else: 
-            hidden_states = hidden_states + input_tensor
-        return hidden_states, _hidden_states
-    
+    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = hidden_states #+ input_tensor
+        return hidden_states
 
 
 class ViTLayer(GradientCheckpointingLayer):
     """This corresponds to the Block class in the timm implementation."""
 
-    def __init__(self, config: ViTConfig, layer_idx: Optional[int] = None):
+    def __init__(self, config: ViTConfig):
         super().__init__()
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = ViTAttention(config)
         self.intermediate = ViTIntermediate(config)
-        self.output = ViTOutput(config, layer_idx=layer_idx)
+        self.output = ViTOutput(config)
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.layer_idx = layer_idx
 
-    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None, ablation_kwargs=None) -> torch.Tensor:
-        if ablation_kwargs is not None and 'full' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
-            return hidden_states, {} 
-        bag = {
-            "hidden_states": hidden_states,
-        }
+    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         hidden_states_norm = self.layernorm_before(hidden_states)
         attention_output = self.attention(hidden_states_norm, head_mask)
-        bag["attention_output"] = attention_output
-        bag['hidden_states_norm'] = hidden_states_norm
-        if ablation_kwargs is not None and 'attention' in ablation_kwargs and ablation_kwargs['layer_idx'] == self.layer_idx:
-            hidden_states = hidden_states 
-        else: 
-            hidden_states = attention_output + hidden_states
+
+        # first residual connection
+        hidden_states = attention_output + hidden_states
 
         # in ViT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
-        bag['layer_output_norm'] = layer_output
         layer_output = self.intermediate(layer_output)
 
         # second residual connection is done here
-        layer_output, _hidden_states = self.output(layer_output, hidden_states, ablation_kwargs=ablation_kwargs)
-        bag['ffn_hidden_state'] = _hidden_states
-        bag['layer_output'] = layer_output
-        return layer_output, bag
+        layer_output = self.output(layer_output, hidden_states) + hidden_states
 
-from transformers.utils import ModelOutput
-
-@dataclass
-class BaseModelOutput(ModelOutput):
-    """
-    Base class for model's outputs, with potential hidden states and attentions.
-
-    Args:
-        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the model.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-    """
-
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
-    bags: Optional[list[dict]] = None
+        return layer_output
 
 
 class ViTEncoder(nn.Module):
     def __init__(self, config: ViTConfig):
         super().__init__()
         self.config = config
-        self.layer = nn.ModuleList([ViTLayer(config, layer_idx=i) for i in range(config.num_hidden_layers)])
+        self.layer = nn.ModuleList([ViTLayer(config) for _ in range(config.num_hidden_layers)])
         self.gradient_checkpointing = False
 
-    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None, **kwargs) -> BaseModelOutput:
-        bags = []
+    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> BaseModelOutput:
         for i, layer_module in enumerate(self.layer):
             layer_head_mask = head_mask[i] if head_mask is not None else None
-            hidden_states, bag = layer_module(hidden_states, layer_head_mask, **kwargs)
-            bags.append(bag)
+            hidden_states = layer_module(hidden_states, layer_head_mask)
 
-
-        return BaseModelOutput(last_hidden_state=hidden_states, bags=bags)
+        return BaseModelOutput(last_hidden_state=hidden_states)
 
 
 @auto_docstring
@@ -462,37 +416,7 @@ class ViTPreTrainedModel(PreTrainedModel):
             if module.mask_token is not None:
                 module.mask_token.data.zero_()
 
-@dataclass
-class BaseModelOutputWithPooling(ModelOutput):
-    """
-    Base class for model's outputs that also contains a pooling of the last hidden states.
 
-    Args:
-        last_hidden_state (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
-            Sequence of hidden-states at the output of the last layer of the model.
-        pooler_output (`torch.FloatTensor` of shape `(batch_size, hidden_size)`):
-            Last layer hidden-state of the first token of the sequence (classification token) after further processing
-            through the layers used for the auxiliary pretraining task. E.g. for BERT-family of models, this returns
-            the classification token after processing through a linear layer and a tanh activation function. The linear
-            layer weights are trained from the next sentence prediction (classification) objective during pretraining.
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
-
-            Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-    """
-
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    pooler_output: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
-    bags: Optional[list[dict]] = None
 @auto_docstring
 class ViTModel(ViTPreTrainedModel):
     def __init__(self, config: ViTConfig, add_pooling_layer: bool = True, use_mask_token: bool = False):
@@ -558,14 +482,14 @@ class ViTModel(ViTPreTrainedModel):
         embedding_output = self.embeddings(
             pixel_values, bool_masked_pos=bool_masked_pos, interpolate_pos_encoding=interpolate_pos_encoding
         )
-        ablation_kwargs = kwargs.pop("ablation_kwargs", None)
-        encoder_outputs: BaseModelOutput = self.encoder(embedding_output, head_mask=head_mask, ablation_kwargs=ablation_kwargs)
+
+        encoder_outputs: BaseModelOutput = self.encoder(embedding_output, head_mask=head_mask)
 
         sequence_output = encoder_outputs.last_hidden_state
         sequence_output = self.layernorm(sequence_output)
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
-        return BaseModelOutputWithPooling(last_hidden_state=sequence_output, pooler_output=pooled_output, bags=encoder_outputs.bags)
+        return BaseModelOutputWithPooling(last_hidden_state=sequence_output, pooler_output=pooled_output)
 
 
 class ViTPooler(nn.Module):
@@ -697,33 +621,6 @@ class ViTForMaskedImageModeling(ViTPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-@dataclass
-class ImageClassifierOutput(ModelOutput):
-    """
-    Base class for outputs of image classification models.
-
-    Args:
-        loss (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided):
-            Classification (or regression if config.num_labels==1) loss.
-        logits (`torch.FloatTensor` of shape `(batch_size, config.num_labels)`):
-            Classification (or regression if config.num_labels==1) scores (before SoftMax).
-        hidden_states (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`):
-            Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
-            one for the output of each stage) of shape `(batch_size, sequence_length, hidden_size)`. Hidden-states
-            (also called feature maps) of the model at the output of each stage.
-        attentions (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`):
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, patch_size,
-            sequence_length)`.
-
-            Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
-            heads.
-    """
-
-    loss: Optional[torch.FloatTensor] = None
-    logits: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
-    attentions: Optional[tuple[torch.FloatTensor, ...]] = None
-    bags: Optional[list[dict]] = None
 
 @auto_docstring(
     custom_intro="""
@@ -764,7 +661,7 @@ class ViTForImageClassification(ViTPreTrainedModel):
     ) -> ImageClassifierOutput:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
-            Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
+            Labels for computing the image classification/regression loss. Indices should be in `[0, transformers.,
             config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
             `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
         """
@@ -789,7 +686,6 @@ class ViTForImageClassification(ViTPreTrainedModel):
             logits=logits,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            bags=outputs.bags,
         )
 
 

@@ -4,7 +4,7 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoImageProcessor, DeiTForImageClassificationWithTeacher
 from datasets import load_dataset
-from modeling_vit_2 import ViTForImageClassification
+from modeling_vit import ViTForImageClassification
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -229,8 +229,8 @@ class ViTSelfAttention(nn.Module):
         query_layer = self.query(hidden_states).view(*new_shape).transpose(1, 2)
 
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
+        # if self.config._attn_implementation != "eager":
+        #    attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
 
         context_layer, attention_probs = attention_interface(
             self,
@@ -291,10 +291,10 @@ class ViTAttention(nn.Module):
         self.attention.all_head_size = self.attention.attention_head_size * self.attention.num_attention_heads
         self.pruned_heads = self.pruned_heads.union(heads)
 
-    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        self_attn_output, _ = self.attention(hidden_states, head_mask)
+    def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        self_attn_output, attention_probs = self.attention(hidden_states, head_mask)
         output = self.output(self_attn_output, hidden_states)
-        return output
+        return output, attention_probs
 
 
 class ViTIntermediate(nn.Module):
@@ -318,6 +318,7 @@ class ViTOutput(nn.Module):
         self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.layer_idx = layer_idx
+        self.alpha_mlp = 1.0
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         _hidden_states = self.dense(hidden_states)
@@ -326,7 +327,9 @@ class ViTOutput(nn.Module):
         #     hidden_states = hidden_states 
         # else: 
         #     hidden_states = hidden_states + input_tensor
-        hidden_states = hidden_states + input_tensor
+        # hidden_states = hidden_states + input_tensor
+        hidden_states = input_tensor + self.alpha_mlp * hidden_states
+
         return hidden_states, _hidden_states
     
 
@@ -344,20 +347,26 @@ class ViTLayer(GradientCheckpointingLayer):
         self.layernorm_before = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layernorm_after = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.layer_idx = layer_idx
+        self.alpha_attn = 1.0
+        self.alpha_mlp = 1.0
+
 
     def forward(self, hidden_states: torch.Tensor, head_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         bag = {
             "hidden_states": hidden_states,
         }
         hidden_states_norm = self.layernorm_before(hidden_states)
-        attention_output = self.attention(hidden_states_norm, head_mask)
+        attention_output, attention_probs = self.attention(hidden_states_norm, head_mask)
         bag["attention_output"] = attention_output
+        bag["attention_probs"] = attention_probs
         bag['hidden_states_norm'] = hidden_states_norm
         # if self.layer_idx == 9: # skip the attention layer output
         #     hidden_states = attention_output 
         # else: 
         #     hidden_states = attention_output + hidden_states
-        hidden_states = attention_output + hidden_states
+        # hidden_states = attention_output + hidden_states
+        hidden_states = hidden_states + self.alpha_attn * attention_output
+
 
         # in ViT, layernorm is also applied after self-attention
         layer_output = self.layernorm_after(hidden_states)
@@ -525,7 +534,7 @@ class ViTModel(ViTPreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
-    @check_model_inputs
+    # @check_model_inputs
     @auto_docstring
     def forward(
         self,
@@ -613,7 +622,7 @@ class ViTForMaskedImageModeling(ViTPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @can_return_tuple
+    # @can_return_tuple
     @auto_docstring
     def forward(
         self,
@@ -752,7 +761,7 @@ class ViTForImageClassification(ViTPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @can_return_tuple
+    # @can_return_tuple
     @auto_docstring
     def forward(
         self,

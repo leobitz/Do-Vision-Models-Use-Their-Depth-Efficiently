@@ -1,8 +1,8 @@
 # Do vision models use their depth efficiently?
 
-This repository contains five notebook experiments on layer contributions,
+This repository contains six notebook experiments on layer contributions,
 layer approximation, component noise, direct logit attribution, linear
-probing in DeiT models.
+probing, and single-image layer analysis in DeiT models.
 
 ## Run on Modal
 
@@ -32,6 +32,16 @@ also accepted:
 python3 submit_modal_jobs.py submit \
   --experiment exp3_component_noise \
   --model "DeiT-base distilled 384"
+```
+
+The single-image notebook traces one ImageNet example through one model. Change
+`sample_index` in `exp6_individual_image_analysis.ipynb` to inspect another
+image, then run it directly or submit it as `exp6`:
+
+```bash
+python3 submit_modal_jobs.py submit \
+  --experiment exp6 \
+  --model "DeiT-tiny"
 ```
 
 Download the persistent results after the jobs finish:

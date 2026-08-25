@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-EXPECTED_EXPERIMENTS = ("exp1", "exp2", "exp3", "exp4", "exp5")
+EXPECTED_EXPERIMENTS = ("exp1", "exp2", "exp3", "exp4", "exp5", "exp6")
 EXPECTED_MODELS = {
     "DeiT-tiny",
     "DeiT-small",
@@ -43,6 +43,11 @@ AGGREGATES: dict[str, dict[str, str]] = {
         "logit_lens_all_models.csv": "logit_lens_all_models.csv",
     },
     "exp5": {"linear_probe_all_models.csv": "linear_probe_all_models.csv"},
+    "exp6": {
+        "individual_components_all_models.csv": "*_individual_components.csv",
+        "individual_logit_lens_all_models.csv": "*_individual_logit_lens.csv",
+        "individual_top_predictions_all_models.csv": "*_individual_top_predictions.csv",
+    },
 }
 
 

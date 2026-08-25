@@ -23,9 +23,12 @@ NOTEBOOKS = {
     "exp3": "exp3_component_noise.ipynb",
     "exp4": "exp4_direct_logit_attribution.ipynb",
     "exp5": "exp5_linear_probing.ipynb",
+    "exp6": "exp6_individual_image_analysis.ipynb",
 }
 
-NOTEBOOK_SUPPORT_FILES = {}
+NOTEBOOK_SUPPORT_FILES = {
+    "exp6": ("individual_image_analysis.py",),
+}
 
 EXPERIMENT_ALIASES = {
     "exp1": "exp1",
@@ -42,6 +45,9 @@ EXPERIMENT_ALIASES = {
     "exp5": "exp5",
     "exp5_linear_probing": "exp5",
     "exp5_linear_probing.ipynb": "exp5",
+    "exp6": "exp6",
+    "exp6_individual_image_analysis": "exp6",
+    "exp6_individual_image_analysis.ipynb": "exp6",
 }
 
 MODEL_NAMES = (
@@ -80,6 +86,7 @@ PILOT_OVERRIDES: dict[str, dict[str, Any]] = {
         "max_test_samples": 64,
         "probe_max_iter": 50,
     },
+    "exp6": {"sample_index": 0},
 }
 
 

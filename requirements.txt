@@ -1,6 +1,7 @@
 datasets>=4.0,<5
 ipykernel>=6.29,<7
 matplotlib>=3.9,<4
+modal>=1.2,<2
 nbclient>=0.10,<1
 nbformat>=5.10,<6
 numpy>=1.26,<3

@@ -216,6 +216,7 @@ __marimo__/
 cloud_results/
 .modal_calls*.json
 standardized_results/
+per_image_depth_results/
 
 # Streamlit
 .streamlit/secrets.toml

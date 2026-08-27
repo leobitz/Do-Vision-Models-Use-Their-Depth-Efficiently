@@ -212,5 +212,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Downloaded Modal experiment artifacts
+cloud_results/
+.modal_calls*.json
+standardized_results/
+per_image_depth_results/
+
 # Streamlit
 .streamlit/secrets.toml
